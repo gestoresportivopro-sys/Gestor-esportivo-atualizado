@@ -12,6 +12,12 @@ import Plans from './components/Plans';
 import Payment from './components/Payment';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
+import Construction from './components/Construction';
+
+// --- CONFIGURAÇÃO DE MANUTENÇÃO ---
+// Mude para 'true' para ativar a página de "Em Breve" para visitantes
+// Mude para 'false' para lançar o site oficial publicamente
+const MAINTENANCE_MODE = true; 
 
 export type PlanType = {
   name: string;
@@ -29,7 +35,11 @@ export type UserType = {
 };
 
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'landing' | 'payment' | 'dashboard' | 'login'>('landing');
+  // Add 'construction' to valid views
+  const [currentView, setCurrentView] = useState<'landing' | 'payment' | 'dashboard' | 'login' | 'construction'>(
+    MAINTENANCE_MODE ? 'construction' : 'landing'
+  );
+  
   const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(null);
   
   // Current logged in user state
@@ -102,6 +112,11 @@ const App: React.FC = () => {
         if (session) {
           await loadUserSession(session);
           setCurrentView('dashboard');
+        } else {
+            // If no session and maintenance mode is on, ensure we are on construction
+            if (MAINTENANCE_MODE) {
+                setCurrentView('construction');
+            }
         }
       } catch (err) {
         console.error("Session check failed:", err);
@@ -124,7 +139,8 @@ const App: React.FC = () => {
         if (currentView === 'dashboard') {
             setCurrentView('login');
         } else if (event === 'SIGNED_OUT') {
-           setCurrentView('landing');
+           // On logout, go back to construction if maintenance is on, else landing
+           setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
         }
       }
     });
@@ -141,7 +157,7 @@ const App: React.FC = () => {
   };
 
   const handleBackToHome = () => {
-    setCurrentView('landing');
+    setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
     setSelectedPlan(null);
     window.scrollTo(0, 0);
   };
@@ -174,7 +190,13 @@ const App: React.FC = () => {
   };
 
   const handleRegisterFromLogin = () => {
-    setCurrentView('landing');
+    // If maintenance mode, maybe disallow registration or redirect to construction? 
+    // For now, let's redirect to landing but maybe landing is not accessible.
+    // Let's redirect to payment/plans directly if needed, or keep landing logic if landing is hidden.
+    // If maintenance is ON, the landing page is technically hidden. 
+    // Let's assume registration is Invite Only during maintenance, OR we show plans.
+    // For simplicity, let's allow going to landing temporarily to see plans.
+    setCurrentView('landing'); 
     setTimeout(() => {
        const plansSection = document.getElementById('plans');
        if(plansSection) plansSection.scrollIntoView({ behavior: 'smooth'});
@@ -214,7 +236,8 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     await (supabase.auth as any).signOut();
     setUser(null);
-    setCurrentView('landing');
+    // Determine where to go after logout
+    setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
     setSelectedPlan(null);
     window.scrollTo(0, 0);
   }
@@ -232,6 +255,11 @@ const App: React.FC = () => {
   // Dashboard View - Strict Check
   if (currentView === 'dashboard' && user) {
     return <Dashboard user={user} onLogout={handleLogout} />;
+  }
+
+  // --- CONSTRUCTION MODE ---
+  if (currentView === 'construction') {
+      return <Construction onLogin={handleNavigateToLogin} />;
   }
 
   return (
