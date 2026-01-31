@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
@@ -45,6 +45,7 @@ const App: React.FC = () => {
   // Current logged in user state
   const [user, setUser] = useState<UserType | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  const mounted = useRef(true);
 
   // Helper to fetch profile from DB
   const fetchUserProfile = async (userId: string, email: string) => {
@@ -82,6 +83,8 @@ const App: React.FC = () => {
 
   // Robust User Loader: Tries DB, Falls back to Session Metadata
   const loadUserSession = async (session: any) => {
+      if (!session?.user) return null;
+      
       // 1. Try DB
       let profileUser = await fetchUserProfile(session.user.id, session.user.email!);
       
@@ -103,6 +106,16 @@ const App: React.FC = () => {
 
   // --- SUPABASE AUTH LISTENER ---
   useEffect(() => {
+    mounted.current = true;
+
+    // Safety timeout to ensure loading doesn't stick forever
+    const loadingTimeout = setTimeout(() => {
+        if (mounted.current && loadingSession) {
+            console.warn("Session check timed out - forcing load complete");
+            setLoadingSession(false);
+        }
+    }, 4000);
+
     // 1. Check active session on load
     const checkSession = async () => {
       try {
@@ -111,18 +124,19 @@ const App: React.FC = () => {
 
         if (session) {
           await loadUserSession(session);
-          setCurrentView('dashboard');
+          if (mounted.current) setCurrentView('dashboard');
         } else {
             // If no session and maintenance mode is on, ensure we are on construction
-            if (MAINTENANCE_MODE) {
-                setCurrentView('construction');
+            // FIX: Allow 'login' view to persist so authorized users can access the restricted area
+            if (MAINTENANCE_MODE && currentView !== 'login') {
+                if (mounted.current) setCurrentView('construction');
             }
         }
       } catch (err) {
         console.error("Session check failed:", err);
-        setUser(null);
+        if (mounted.current) setUser(null);
       } finally {
-        setLoadingSession(false);
+        if (mounted.current) setLoadingSession(false);
       }
     };
 
@@ -130,6 +144,8 @@ const App: React.FC = () => {
 
     // 2. Listen for auth changes
     const { data: { subscription } } = (supabase.auth as any).onAuthStateChange(async (event: string, session: any) => {
+      if (!mounted.current) return;
+      
       if (session) {
          // Re-use robust loader
          await loadUserSession(session);
@@ -145,8 +161,12 @@ const App: React.FC = () => {
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, [currentView]); // Added currentView to dependency to ensure correct redirect logic
+    return () => {
+        mounted.current = false;
+        clearTimeout(loadingTimeout);
+        subscription.unsubscribe();
+    };
+  }, []); // Remove dependencies to run once on mount
 
   // --- HANDLERS ---
 
@@ -169,12 +189,22 @@ const App: React.FC = () => {
 
   // Handle Login Success
   const handleLoginSuccess = async () => {
-     const { data: { session } } = await (supabase.auth as any).getSession();
-     if (session) {
-        await loadUserSession(session);
+     try {
+        setLoadingSession(true); // Show loading while fetching profile
+        const { data: { session } } = await (supabase.auth as any).getSession();
+        if (session) {
+            await loadUserSession(session);
+            setCurrentView('dashboard');
+        } else {
+            // Fallback if session is not immediately available (rare race condition)
+            console.error("Login success but no session found");
+        }
+     } catch (err) {
+        console.error("Error during login transition:", err);
+     } finally {
+        setLoadingSession(false);
+        window.scrollTo(0, 0);
      }
-     setCurrentView('dashboard');
-     window.scrollTo(0, 0);
   };
 
   // --- DEMO MODE HANDLER (Bypass Supabase) ---
@@ -192,8 +222,6 @@ const App: React.FC = () => {
   const handleRegisterFromLogin = () => {
     // If maintenance mode, maybe disallow registration or redirect to construction? 
     // For now, let's redirect to landing but maybe landing is not accessible.
-    // Let's redirect to payment/plans directly if needed, or keep landing logic if landing is hidden.
-    // If maintenance is ON, the landing page is technically hidden. 
     // Let's assume registration is Invite Only during maintenance, OR we show plans.
     // For simplicity, let's allow going to landing temporarily to see plans.
     setCurrentView('landing'); 
@@ -247,7 +275,10 @@ const App: React.FC = () => {
      return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500">
         <div className="text-center">
            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-           <p>Carregando sistema...</p>
+           <p className="animate-pulse">Carregando sistema...</p>
+           <button onClick={() => window.location.reload()} className="mt-8 text-xs text-blue-400 hover:underline">
+              Demorando muito? Recarregar
+           </button>
         </div>
      </div>;
   }

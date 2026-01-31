@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { 
-  Trophy, Home, PlusCircle, BarChart2, FileText, Share2, Settings, HelpCircle, LogOut, 
+  Trophy, Home, PlusCircle, BarChart2, FileText, Share2, Settings, HelpCircle, LogIn, LogOut, 
   Menu, X, Search, Bell, User, Calendar, MapPin, Upload, ChevronRight, Layers, Users, 
   Dna, Image as ImageIcon, Video, MessageSquare, Save, Printer, Trash2, Lock, CheckCircle, AlertCircle,
   Info, Camera, Shield, UserPlus, Phone, Globe, Facebook, Instagram, Mail, Award, AlertTriangle, PlayCircle,
-  ChevronUp, ChevronDown, Loader2, MoreVertical
+  ChevronUp, ChevronDown, Loader2, MoreVertical, Database, Copy, Check
 } from 'lucide-react';
 import { UserType } from '../App';
 
@@ -82,6 +82,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Database Missing State
+  const [dbMissing, setDbMissing] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
   // Form State for Championship Creation/Editing
   const initialFormState: ChampionshipConfig = {
       id: 0,
@@ -127,6 +131,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
   const fetchChampionships = async () => {
     setLoading(true);
+    setDbMissing(false);
     try {
       const { data, error } = await supabase
         .from('campeonatos')
@@ -171,9 +176,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         setMyChampionships(mappedChamps);
       }
     } catch (error: any) {
-      // Gracefully handle missing table error (PGRST205 or 42P01)
+      // Handle missing table error (PGRST205 or 42P01)
       if (error.code === 'PGRST205' || error.code === '42P01') {
-          console.warn("Tabela 'campeonatos' não encontrada. O sistema funcionará com dados vazios.");
+          console.warn("Tabelas não encontradas. Solicitando setup.");
+          setDbMissing(true);
           setMyChampionships([]); 
       } else {
           console.error('Erro ao buscar campeonatos:', error);
@@ -204,12 +210,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
               })));
           }
       } catch (err: any) {
-          if (err.code === 'PGRST205' || err.code === '42P01') {
-             // suppress error for missing table
-             setTeams([]);
-          } else {
-             console.error("Erro ao buscar times:", err);
-          }
+          console.error("Erro ao buscar times:", err);
       } finally {
           setLoadingTeams(false);
       }
@@ -237,11 +238,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
           fetchTeams(currentChamp.id); // Refresh list
       } catch (err: any) {
           console.error("Erro ao adicionar time:", err);
-          if (err.code === 'PGRST205' || err.code === '42P01') {
-              alert("Erro: Banco de dados não configurado (Tabela 'teams' inexistente).");
-          } else {
-              alert("Erro: " + err.message);
-          }
+          alert("Erro: " + err.message);
       } finally {
           setSaving(false);
       }
@@ -316,18 +313,49 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
         // Refresh list
         await fetchChampionships();
-        setView('list');
+        
+        // If we are in Manage View, update the currentChamp state and DON'T redirect
+        if (view === 'manage') {
+            setCurrentChamp(champForm);
+            alert("Alterações salvas com sucesso!");
+        } else {
+            // If we are in Wizard, go to List
+            setView('list');
+        }
 
       } catch (error: any) {
         console.error("Erro ao salvar:", error);
-        if (error.code === 'PGRST205' || error.code === '42P01') {
-            alert("Erro: Banco de dados não configurado (Tabela 'campeonatos' inexistente). Contate o administrador.");
-        } else {
-            alert("Erro ao salvar campeonato: " + error.message);
-        }
+        alert("Erro ao salvar campeonato: " + error.message);
       } finally {
         setSaving(false);
       }
+  };
+
+  const handleDeleteChampionship = async () => {
+    if (!currentChamp) return;
+    
+    const confirmName = window.prompt(`Para confirmar a exclusão, digite o nome do campeonato: "${currentChamp.name}"`);
+    if (confirmName !== currentChamp.name) {
+        if (confirmName !== null) alert("Nome incorreto. A exclusão foi cancelada.");
+        return;
+    }
+
+    setSaving(true);
+    try {
+        // Teams cascade delete automatically due to SQL setup, but good to know
+        const { error } = await supabase.from('campeonatos').delete().eq('id', currentChamp.id);
+        
+        if (error) throw error;
+        
+        await fetchChampionships();
+        setCurrentChamp(null);
+        setView('list');
+    } catch (err: any) {
+        console.error("Erro ao excluir:", err);
+        alert("Erro ao excluir campeonato: " + err.message);
+    } finally {
+        setSaving(false);
+    }
   };
 
   // --- HANDLERS ---
@@ -391,6 +419,83 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
           };
           reader.readAsDataURL(file);
       }
+  };
+
+  const handleCopySql = () => {
+    const sql = `-- 1. Tabelas (com verificação de existência)
+create table if not exists public.profiles (
+  id uuid references auth.users not null primary key,
+  name text,
+  plan text default 'Starter'
+);
+
+create table if not exists public.campeonatos (
+  id bigint generated by default as identity primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users not null,
+  name text not null,
+  sport text,
+  type text,
+  start_date date,
+  end_date date,
+  location text,
+  description text,
+  logo_url text,
+  cover_url text,
+  config jsonb default '{}'::jsonb
+);
+
+create table if not exists public.teams (
+  id bigint generated by default as identity primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users not null,
+  championship_id bigint references public.campeonatos on delete cascade not null,
+  name text not null,
+  coach text,
+  contact_phone text,
+  logo_url text
+);
+
+-- 2. Habilitar RLS (Seguro para rodar múltiplas vezes)
+alter table public.profiles enable row level security;
+alter table public.campeonatos enable row level security;
+alter table public.teams enable row level security;
+
+-- 3. Políticas de Acesso (Recriar para garantir)
+drop policy if exists "Usuario ver proprio perfil" on public.profiles;
+create policy "Usuario ver proprio perfil" on public.profiles for select using (auth.uid() = id);
+
+drop policy if exists "Usuario atualizar proprio perfil" on public.profiles;
+create policy "Usuario atualizar proprio perfil" on public.profiles for update using (auth.uid() = id);
+
+drop policy if exists "Usuario criar proprio perfil" on public.profiles;
+create policy "Usuario criar proprio perfil" on public.profiles for insert with check (auth.uid() = id);
+
+drop policy if exists "Usuario gerenciar seus campeonatos" on public.campeonatos;
+create policy "Usuario gerenciar seus campeonatos" on public.campeonatos using (auth.uid() = user_id);
+
+drop policy if exists "Usuario gerenciar seus times" on public.teams;
+create policy "Usuario gerenciar seus times" on public.teams using (auth.uid() = user_id);
+
+-- 4. Função e Trigger (Idempotente)
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.profiles (id, name, plan)
+  values (new.id, new.raw_user_meta_data->>'full_name', 'Starter')
+  on conflict (id) do nothing;
+  return new;
+end;
+$$ language plpgsql security definer;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();`;
+
+    navigator.clipboard.writeText(sql);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
   };
 
   // --- RENDERERS ---
@@ -486,6 +591,137 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       </div>
     </header>
   );
+
+  // --- RENDER DATABASE SETUP (IF TABLES MISSING) ---
+  const renderDbSetup = () => (
+      <div className="p-8 max-w-5xl mx-auto">
+          <div className="bg-amber-50 border border-amber-200 rounded-3xl p-8 shadow-xl">
+              <div className="flex items-start gap-6">
+                  <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 text-amber-600">
+                      <Database className="w-8 h-8" />
+                  </div>
+                  <div className="flex-1">
+                      <h2 className="text-2xl font-bold text-amber-900 mb-2">Banco de Dados Não Configurado</h2>
+                      <p className="text-amber-800/80 mb-6 leading-relaxed">
+                          O sistema detectou que as tabelas necessárias ainda não foram criadas no seu projeto Supabase. 
+                          Para corrigir isso, você precisa executar o script SQL abaixo no painel do Supabase.
+                      </p>
+
+                      <div className="bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
+                          <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex justify-between items-center">
+                              <span className="text-slate-400 text-xs font-mono">setup_schema.sql</span>
+                              <button 
+                                  onClick={handleCopySql}
+                                  className={`text-xs font-bold px-3 py-1.5 rounded-lg flex items-center transition-all ${copiedSql ? 'bg-green-500 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'}`}
+                              >
+                                  {copiedSql ? <Check className="w-3 h-3 mr-2" /> : <Copy className="w-3 h-3 mr-2" />}
+                                  {copiedSql ? 'Copiado!' : 'Copiar SQL'}
+                              </button>
+                          </div>
+                          <div className="p-4 overflow-x-auto max-h-96">
+                              <pre className="text-blue-300 font-mono text-xs leading-relaxed">
+{`-- 1. Tabelas (com verificação de existência)
+create table if not exists public.profiles (
+  id uuid references auth.users not null primary key,
+  name text,
+  plan text default 'Starter'
+);
+
+create table if not exists public.campeonatos (
+  id bigint generated by default as identity primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users not null,
+  name text not null,
+  sport text,
+  type text,
+  start_date date,
+  end_date date,
+  location text,
+  description text,
+  logo_url text,
+  cover_url text,
+  config jsonb default '{}'::jsonb
+);
+
+create table if not exists public.teams (
+  id bigint generated by default as identity primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users not null,
+  championship_id bigint references public.campeonatos on delete cascade not null,
+  name text not null,
+  coach text,
+  contact_phone text,
+  logo_url text
+);
+
+-- 2. Habilitar RLS (Seguro para rodar múltiplas vezes)
+alter table public.profiles enable row level security;
+alter table public.campeonatos enable row level security;
+alter table public.teams enable row level security;
+
+-- 3. Políticas de Acesso (Recriar para garantir)
+drop policy if exists "Usuario ver proprio perfil" on public.profiles;
+create policy "Usuario ver proprio perfil" on public.profiles for select using (auth.uid() = id);
+
+drop policy if exists "Usuario atualizar proprio perfil" on public.profiles;
+create policy "Usuario atualizar proprio perfil" on public.profiles for update using (auth.uid() = id);
+
+drop policy if exists "Usuario criar proprio perfil" on public.profiles;
+create policy "Usuario criar proprio perfil" on public.profiles for insert with check (auth.uid() = id);
+
+drop policy if exists "Usuario gerenciar seus campeonatos" on public.campeonatos;
+create policy "Usuario gerenciar seus campeonatos" on public.campeonatos using (auth.uid() = user_id);
+
+drop policy if exists "Usuario gerenciar seus times" on public.teams;
+create policy "Usuario gerenciar seus times" on public.teams using (auth.uid() = user_id);
+
+-- 4. Função e Trigger (Idempotente)
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.profiles (id, name, plan)
+  values (new.id, new.raw_user_meta_data->>'full_name', 'Starter')
+  on conflict (id) do nothing;
+  return new;
+end;
+$$ language plpgsql security definer;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();`}
+                              </pre>
+                          </div>
+                      </div>
+
+                      <div className="mt-8 space-y-4">
+                          <h3 className="font-bold text-amber-900">Como resolver:</h3>
+                          <ol className="list-decimal list-inside space-y-2 text-sm text-amber-800">
+                              <li>Clique no botão <strong>Copiar SQL</strong> acima.</li>
+                              <li>Acesse seu <a href="https://supabase.com/dashboard" target="_blank" className="underline font-bold hover:text-amber-600">Painel do Supabase</a>.</li>
+                              <li>No menu lateral esquerdo, clique em <strong>SQL Editor</strong>.</li>
+                              <li>Cole o código na área de edição e clique em <strong>Run</strong>.</li>
+                              <li>Volte aqui e clique no botão abaixo para recarregar.</li>
+                          </ol>
+                      </div>
+
+                      <div className="mt-8 flex gap-4">
+                          <button 
+                              onClick={() => window.location.reload()}
+                              className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 px-8 rounded-xl shadow-lg shadow-amber-600/20 transition-all transform hover:-translate-y-1 flex items-center"
+                          >
+                              <RefreshCw className="w-5 h-5 mr-2" /> Já executei, recarregar página
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      </div>
+  );
+
+  // Helper component for Refresh Icon since we can't import it in renderDbSetup due to scope but we imported Lucide earlier
+  const RefreshCw = ({className}: {className?: string}) => <svg className={className} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>;
+
 
   // --- VIEW: LIST ---
   const renderList = () => (
@@ -1047,52 +1283,123 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                 )}
 
                 {manageTab === 'settings' && (
-                    <div className="max-w-3xl animate-fade-in">
+                    <div className="max-w-4xl animate-fade-in pb-10">
                         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 space-y-8">
-                            <h3 className="text-xl font-bold text-slate-900 border-b border-slate-100 pb-4">Configurações Gerais</h3>
-                            
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <h4 className="font-bold text-slate-800">Inscrições Online</h4>
-                                    <p className="text-sm text-slate-500">Permitir que equipes se cadastrem através do link público.</p>
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                                <h3 className="text-xl font-bold text-slate-900">Editar Campeonato</h3>
+                                <span className="text-xs text-slate-400">ID: {currentChamp.id}</span>
+                            </div>
+
+                            {/* Basic Info Form */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Nome do Campeonato</label>
+                                    <input name="name" value={champForm.name} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Nome do campeonato" />
                                 </div>
-                                <div className={`w-14 h-8 rounded-full p-1 cursor-pointer transition-colors ${currentChamp.publicInscription ? 'bg-green-500' : 'bg-slate-200'}`} onClick={() => setChampForm(prev => ({...prev, publicInscription: !prev.publicInscription}))}>
-                                    <div className={`w-6 h-6 bg-white rounded-full shadow-md transform transition-transform ${currentChamp.publicInscription ? 'translate-x-6' : ''}`}></div>
+                                
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Data de Início</label>
+                                    <input type="date" name="startDate" value={champForm.startDate} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Data de Término</label>
+                                    <input type="date" name="endDate" value={champForm.endDate} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Local / Sede</label>
+                                    <input name="location" value={champForm.location} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Descrição</label>
+                                    <textarea name="description" value={champForm.description} onChange={handleInputChange} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none h-24" />
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Modalidade (Não editável)</label>
+                                    <input value={champForm.sport} disabled className="w-full p-3 bg-slate-100 border border-slate-200 rounded-xl text-slate-500 cursor-not-allowed" />
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            {/* Images */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-100">
                                 <div>
-                                    <h4 className="font-bold text-slate-800">Estatísticas Públicas</h4>
-                                    <p className="text-sm text-slate-500">Exibir artilharia e cartões na página do campeonato.</p>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Logo</label>
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-20 h-20 bg-slate-50 border rounded-lg flex items-center justify-center overflow-hidden">
+                                            {champForm.logo ? <img src={champForm.logo} className="w-full h-full object-cover" /> : <Camera className="text-slate-300"/>}
+                                        </div>
+                                        <div className="relative">
+                                            <button className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold rounded-lg transition-colors pointer-events-none">Alterar Logo</button>
+                                            <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => handleImageUpload(e, 'logo')} accept="image/*" />
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className={`w-14 h-8 rounded-full p-1 cursor-pointer transition-colors ${currentChamp.showStatsPublicly ? 'bg-green-500' : 'bg-slate-200'}`} onClick={() => setChampForm(prev => ({...prev, showStatsPublicly: !prev.showStatsPublicly}))}>
-                                    <div className={`w-6 h-6 bg-white rounded-full shadow-md transform transition-transform ${currentChamp.showStatsPublicly ? 'translate-x-6' : ''}`}></div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Capa</label>
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-32 h-20 bg-slate-50 border rounded-lg flex items-center justify-center overflow-hidden">
+                                            {champForm.cover ? <img src={champForm.cover} className="w-full h-full object-cover" /> : <ImageIcon className="text-slate-300"/>}
+                                        </div>
+                                        <div className="relative">
+                                            <button className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold rounded-lg transition-colors pointer-events-none">Alterar Capa</button>
+                                            <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => handleImageUpload(e, 'cover')} accept="image/*" />
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                             <div className="flex items-center justify-between">
-                                <div>
-                                    <h4 className="font-bold text-slate-800">Comentários e Torcida</h4>
-                                    <p className="text-sm text-slate-500">Permitir interação do público nas partidas.</p>
+                            {/* Feature Toggles */}
+                            <div className="space-y-4 pt-4 border-t border-slate-100">
+                                <h4 className="font-bold text-slate-900 mb-2">Visibilidade e Recursos</h4>
+                                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                                    <div>
+                                        <h5 className="font-bold text-slate-800 text-sm">Inscrições Online</h5>
+                                        <p className="text-xs text-slate-500">Permitir cadastro público de times</p>
+                                    </div>
+                                    <div className={`w-12 h-7 rounded-full p-1 cursor-pointer transition-colors ${champForm.publicInscription ? 'bg-green-500' : 'bg-slate-200'}`} onClick={() => setChampForm(prev => ({...prev, publicInscription: !prev.publicInscription}))}>
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${champForm.publicInscription ? 'translate-x-5' : ''}`}></div>
+                                    </div>
                                 </div>
-                                <div className={`w-14 h-8 rounded-full p-1 cursor-pointer transition-colors ${currentChamp.allowComments ? 'bg-green-500' : 'bg-slate-200'}`} onClick={() => setChampForm(prev => ({...prev, allowComments: !prev.allowComments}))}>
-                                    <div className={`w-6 h-6 bg-white rounded-full shadow-md transform transition-transform ${currentChamp.allowComments ? 'translate-x-6' : ''}`}></div>
+                                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                                    <div>
+                                        <h5 className="font-bold text-slate-800 text-sm">Estatísticas Públicas</h5>
+                                        <p className="text-xs text-slate-500">Mostrar artilharia e tabelas no site</p>
+                                    </div>
+                                    <div className={`w-12 h-7 rounded-full p-1 cursor-pointer transition-colors ${champForm.showStatsPublicly ? 'bg-green-500' : 'bg-slate-200'}`} onClick={() => setChampForm(prev => ({...prev, showStatsPublicly: !prev.showStatsPublicly}))}>
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${champForm.showStatsPublicly ? 'translate-x-5' : ''}`}></div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div className="pt-6 border-t border-slate-100 flex justify-end gap-3">
-                                <button className="px-6 py-2.5 border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 transition-colors flex items-center">
-                                    <Trash2 className="w-4 h-4 mr-2" /> Excluir Campeonato
-                                </button>
+                            {/* Save Button */}
+                            <div className="pt-6 border-t border-slate-100 flex justify-end">
                                 <button 
                                     onClick={handleSaveChampionship}
                                     disabled={saving}
-                                    className="px-6 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors flex items-center disabled:opacity-70"
+                                    className="px-8 py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors flex items-center shadow-lg disabled:opacity-70"
                                 >
-                                    {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Save className="w-4 h-4 mr-2" />}
+                                    {saving ? <Loader2 className="w-5 h-5 mr-2 animate-spin"/> : <Save className="w-5 h-5 mr-2" />}
                                     Salvar Alterações
                                 </button>
+                            </div>
+
+                            {/* Danger Zone */}
+                            <div className="mt-12 pt-8 border-t border-red-100">
+                                <h4 className="text-red-600 font-bold mb-4 flex items-center"><AlertTriangle className="w-5 h-5 mr-2"/> Zona de Perigo</h4>
+                                <div className="bg-red-50 border border-red-100 rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+                                    <div>
+                                        <p className="font-bold text-red-900">Excluir este campeonato</p>
+                                        <p className="text-sm text-red-700/80">Essa ação não pode ser desfeita. Todos os times, jogos e estatísticas serão apagados permanentemente.</p>
+                                    </div>
+                                    <button 
+                                        onClick={handleDeleteChampionship}
+                                        className="px-6 py-2.5 bg-white border border-red-200 text-red-600 rounded-lg font-bold hover:bg-red-600 hover:text-white transition-colors flex-shrink-0"
+                                    >
+                                        Excluir Definitivamente
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1220,10 +1527,14 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         {renderHeader()}
         
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 relative scroll-smooth">
-          {view === 'list' && renderList()}
-          {view === 'create_selection' && renderCreateSelection()}
-          {view === 'create_form' && renderCreateForm()}
-          {view === 'manage' && renderManager()}
+          {dbMissing ? renderDbSetup() : (
+              <>
+                  {view === 'list' && renderList()}
+                  {view === 'create_selection' && renderCreateSelection()}
+                  {view === 'create_form' && renderCreateForm()}
+                  {view === 'manage' && renderManager()}
+              </>
+          )}
         </main>
       </div>
     </div>

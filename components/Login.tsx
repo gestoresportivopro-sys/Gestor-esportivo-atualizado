@@ -53,24 +53,37 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onBack, onRegisterClick, 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    
     setLoading(true);
     setError('');
     setResendSuccess('');
     setShowResend(false);
 
     try {
-      // Fix: Cast auth to any to avoid type errors with mismatched supabase-js versions
-      const { error } = await (supabase.auth as any).signInWithPassword({
+      // Create a timeout promise to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Tempo limite excedido. Verifique sua conexão.')), 15000)
+      );
+
+      const loginPromise = (supabase.auth as any).signInWithPassword({
         email: formData.email,
         password: formData.password,
       });
+
+      // Race between login and timeout
+      const { data, error } = await Promise.race([loginPromise, timeoutPromise]) as any;
 
       if (error) {
         throw error;
       }
 
+      // Login successful
       onLoginSuccess();
+      
     } catch (err: any) {
+      setLoading(false); // Only stop loading on error, keep loading on success until parent unmounts
+      
       const msg = err.message || '';
 
       // Clean up console for expected user errors
@@ -81,13 +94,16 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onBack, onRegisterClick, 
          console.warn('Login attempt failed: Email not confirmed');
          setError('Sua conta ainda não foi ativada. É necessário confirmar o e-mail antes de entrar.');
          setShowResend(true);
+      } else if (msg.includes('Tempo limite')) {
+         setError('O servidor demorou para responder. Verifique sua internet e tente novamente.');
       } else {
          console.error('Login error:', err);
          setError(msg || 'Erro ao realizar login. Tente novamente.');
       }
-    } finally {
-      setLoading(false);
-    }
+    } 
+    // Note: We do NOT call setLoading(false) in finally block if success, 
+    // because the parent component will unmount this component shortly after onLoginSuccess.
+    // Keeping it loading prevents user from clicking again.
   };
 
   return (
