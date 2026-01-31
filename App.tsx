@@ -13,6 +13,7 @@ import Payment from './components/Payment';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
 import Construction from './components/Construction';
+import PublicChampionship from './components/PublicChampionship';
 
 // --- CONFIGURAÇÃO DE MANUTENÇÃO ---
 // Mude para 'true' para ativar a página de "Em Breve" para visitantes
@@ -35,12 +36,13 @@ export type UserType = {
 };
 
 const App: React.FC = () => {
-  // Add 'construction' to valid views
-  const [currentView, setCurrentView] = useState<'landing' | 'payment' | 'dashboard' | 'login' | 'construction'>(
+  // Add 'public_championship' to valid views
+  const [currentView, setCurrentView] = useState<'landing' | 'payment' | 'dashboard' | 'login' | 'construction' | 'public_championship'>(
     MAINTENANCE_MODE ? 'construction' : 'landing'
   );
   
   const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(null);
+  const [publicChampId, setPublicChampId] = useState<number | string | null>(null);
   
   // Current logged in user state
   const [user, setUser] = useState<UserType | null>(null);
@@ -57,8 +59,6 @@ const App: React.FC = () => {
         .single();
 
       if (error) {
-        // Don't warn on 'PGRST116' (row not found) or 'PGRST205' (table missing)
-        // This keeps the console clean for new projects
         if (error.code !== 'PGRST116' && error.code !== 'PGRST205' && error.code !== '42P01') {
             console.warn("Profile fetch warning:", error.message);
         }
@@ -81,17 +81,11 @@ const App: React.FC = () => {
     return null;
   };
 
-  // Robust User Loader: Tries DB, Falls back to Session Metadata
+  // Robust User Loader
   const loadUserSession = async (session: any) => {
       if (!session?.user) return null;
-      
-      // 1. Try DB
       let profileUser = await fetchUserProfile(session.user.id, session.user.email!);
-      
-      // 2. If null, use Fallback from Metadata
       if (!profileUser) {
-          // Only warn if we are debugging, otherwise it's expected for new/demo setups
-          // console.warn("Profile not found in DB. Using session metadata as fallback.");
           const fallbackUser: UserType = {
               id: session.user.id,
               name: session.user.user_metadata?.full_name || 'Usuário',
@@ -107,16 +101,13 @@ const App: React.FC = () => {
   // --- SUPABASE AUTH LISTENER ---
   useEffect(() => {
     mounted.current = true;
-
-    // Safety timeout to ensure loading doesn't stick forever
     const loadingTimeout = setTimeout(() => {
         if (mounted.current && loadingSession) {
             console.warn("Session check timed out - forcing load complete");
             setLoadingSession(false);
         }
-    }, 4000);
+    }, 30000);
 
-    // 1. Check active session on load
     const checkSession = async () => {
       try {
         const { data: { session }, error } = await (supabase.auth as any).getSession();
@@ -126,9 +117,7 @@ const App: React.FC = () => {
           await loadUserSession(session);
           if (mounted.current) setCurrentView('dashboard');
         } else {
-            // If no session and maintenance mode is on, ensure we are on construction
-            // FIX: Allow 'login' view to persist so authorized users can access the restricted area
-            if (MAINTENANCE_MODE && currentView !== 'login') {
+            if (MAINTENANCE_MODE && currentView !== 'login' && currentView !== 'public_championship') {
                 if (mounted.current) setCurrentView('construction');
             }
         }
@@ -142,20 +131,15 @@ const App: React.FC = () => {
 
     checkSession();
 
-    // 2. Listen for auth changes
     const { data: { subscription } } = (supabase.auth as any).onAuthStateChange(async (event: string, session: any) => {
       if (!mounted.current) return;
-      
       if (session) {
-         // Re-use robust loader
          await loadUserSession(session);
       } else {
-        // Critical Fix: If session is null, clear user AND redirect to avoid limbo state
         setUser(null);
         if (currentView === 'dashboard') {
             setCurrentView('login');
         } else if (event === 'SIGNED_OUT') {
-           // On logout, go back to construction if maintenance is on, else landing
            setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
         }
       }
@@ -166,7 +150,7 @@ const App: React.FC = () => {
         clearTimeout(loadingTimeout);
         subscription.unsubscribe();
     };
-  }, []); // Remove dependencies to run once on mount
+  }, []);
 
   // --- HANDLERS ---
 
@@ -187,16 +171,31 @@ const App: React.FC = () => {
     window.scrollTo(0, 0);
   }
 
+  // --- NEW: View Public Page Handler ---
+  const handleViewPublicPage = (champId: number | string) => {
+      setPublicChampId(champId);
+      setCurrentView('public_championship');
+      window.scrollTo(0, 0);
+  };
+
+  const handleBackFromPublic = () => {
+      // If user is logged in, go back to dashboard, else go to home
+      if (user) {
+          setCurrentView('dashboard');
+      } else {
+          setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
+      }
+  };
+
   // Handle Login Success
   const handleLoginSuccess = async () => {
      try {
-        setLoadingSession(true); // Show loading while fetching profile
+        setLoadingSession(true); 
         const { data: { session } } = await (supabase.auth as any).getSession();
         if (session) {
             await loadUserSession(session);
             setCurrentView('dashboard');
         } else {
-            // Fallback if session is not immediately available (rare race condition)
             console.error("Login success but no session found");
         }
      } catch (err) {
@@ -207,23 +206,18 @@ const App: React.FC = () => {
      }
   };
 
-  // --- DEMO MODE HANDLER (Bypass Supabase) ---
   const handleDemoLogin = () => {
     setUser({
       id: 'demo-user-123',
       name: 'Visitante (Demo)',
       email: 'visitante@gestorpro.com',
-      plan: 'Elite' // Give full access for demo
+      plan: 'Elite' 
     });
     setCurrentView('dashboard');
     window.scrollTo(0, 0);
   };
 
   const handleRegisterFromLogin = () => {
-    // If maintenance mode, maybe disallow registration or redirect to construction? 
-    // For now, let's redirect to landing but maybe landing is not accessible.
-    // Let's assume registration is Invite Only during maintenance, OR we show plans.
-    // For simplicity, let's allow going to landing temporarily to see plans.
     setCurrentView('landing'); 
     setTimeout(() => {
        const plansSection = document.getElementById('plans');
@@ -231,24 +225,16 @@ const App: React.FC = () => {
     }, 100);
   };
 
-  // Handle Register Success
   const handleRegisterSuccess = async () => {
      setLoadingSession(true);
      try {
         const { data: { session } } = await (supabase.auth as any).getSession();
         if (session) {
-           // Try DB fetch first
            let profile = await fetchUserProfile(session.user.id, session.user.email!);
-
-           // Retry logic for race conditions (DB trigger latency)
            if (!profile) {
               await new Promise(resolve => setTimeout(resolve, 1500));
-              // Use the robust loader for the second attempt/fallback
               await loadUserSession(session);
-           } else {
-               // Profile found, user already set by fetchUserProfile
            }
-
            setCurrentView('dashboard');
         } else {
            setCurrentView('login');
@@ -264,13 +250,12 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     await (supabase.auth as any).signOut();
     setUser(null);
-    // Determine where to go after logout
     setCurrentView(MAINTENANCE_MODE ? 'construction' : 'landing');
     setSelectedPlan(null);
     window.scrollTo(0, 0);
   }
 
-  // Global Loading State (Initial Load)
+  // Global Loading State
   if (loadingSession) {
      return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500">
         <div className="text-center">
@@ -283,9 +268,14 @@ const App: React.FC = () => {
      </div>;
   }
 
+  // --- PUBLIC VIEW RENDER ---
+  if (currentView === 'public_championship' && publicChampId) {
+      return <PublicChampionship championshipId={publicChampId} onBack={handleBackFromPublic} />;
+  }
+
   // Dashboard View - Strict Check
   if (currentView === 'dashboard' && user) {
-    return <Dashboard user={user} onLogout={handleLogout} />;
+    return <Dashboard user={user} onLogout={handleLogout} onViewPublicPage={handleViewPublicPage} />;
   }
 
   // --- CONSTRUCTION MODE ---
